@@ -1,0 +1,155 @@
+---
+- name: Install Jenkins and maven on Debian/Ubuntu
+  hosts: jenkins
+  become: yes
+
+  vars:
+    jenkins_repo_url: "https://pkg.jenkins.io/debian-stable"
+    jenkins_gpg_key_url: "https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key"
+    jenkins_keyring_path: "/usr/share/keyrings/jenkins-keyring.asc"
+
+  tasks:
+    - name: Install required dependencies
+      apt:
+        name: "{{ item }}"
+        state: present
+        update_cache: yes
+      loop:
+        - apt-transport-https
+        - ca-certificates
+        - gnupg
+        - curl
+        - openjdk-17-jdk  # Jenkins requires Java
+
+    - name: Download Jenkins GPG key
+      get_url:
+        url: "{{ jenkins_gpg_key_url }}"
+        dest: "{{ jenkins_keyring_path }}"
+        mode: '0644'
+
+    - name: Add Jenkins APT repository
+      apt_repository:
+        repo: "deb [signed-by={{ jenkins_keyring_path }}] {{ jenkins_repo_url }} binary/"
+        state: present
+        filename: 'jenkins'
+
+    - name: Update APT cache
+      apt:
+        update_cache: yes
+
+    - name: Install Jenkins
+      apt:
+        name: jenkins
+        state: present
+
+    - name: Ensure Jenkins is started and enabled
+      systemd:
+        name: jenkins
+        enabled: yes
+        state: started
+
+
+    - name: Install Maven
+      become: yes
+      apt:
+        name: "{{ packages }}"
+        state: present
+        update_cache: yes
+      vars:
+        packages:
+           - maven
+
+
+- name: Install Tomcat on Amazon Linux
+  hosts: tomcat
+  become: yes
+
+  vars:
+    tomcat_version: 9.0.76
+    tomcat_install_dir: /opt/tomcat
+    tomcat_user: tomcat
+    tomcat_group: tomcat
+
+  tasks:
+
+    - name: Install Java (OpenJDK)
+      dnf:
+        name: java-1.8.0-openjdk
+        state: present
+
+    - name: Create tomcat group
+      group:
+        name: "{{ tomcat_group }}"
+        state: present
+
+    - name: Create tomcat user
+      user:
+        name: "{{ tomcat_user }}"
+        group: "{{ tomcat_group }}"
+        shell: /bin/false
+        home: "{{ tomcat_install_dir }}"
+        system: yes
+
+    - name: Download Tomcat archive
+      get_url:
+        url: "https://archive.apache.org/dist/tomcat/tomcat-9/v9.0.76/bin/apache-tomcat-9.0.76.tar.gz"
+        dest: /tmp/apache-tomcat-{{ tomcat_version }}.tar.gz
+
+    - name: Extract Tomcat
+      unarchive:
+        src: /tmp/apache-tomcat-{{ tomcat_version }}.tar.gz
+        dest: "{{ tomcat_install_dir }}"
+        remote_src: yes
+        creates: "{{ tomcat_install_dir }}/apache-tomcat-{{ tomcat_version }}"
+
+    - name: Set permissions on Tomcat directory
+      file:
+        path: "{{ tomcat_install_dir }}/apache-tomcat-{{ tomcat_version }}"
+        state: directory
+        recurse: yes
+        owner: "{{ tomcat_user }}"
+        group: "{{ tomcat_group }}"
+
+    - name: Symlink to simplify path
+      file:
+        src: "{{ tomcat_install_dir }}/apache-tomcat-{{ tomcat_version }}"
+        dest: "{{ tomcat_install_dir }}/latest"
+        state: link
+        force: yes
+
+    - name: Create systemd service for Tomcat
+      copy:
+        dest: /etc/systemd/system/tomcat.service
+        content: |
+          [Unit]
+          Description=Apache Tomcat Web Application Container
+          After=network.target
+
+          [Service]
+          Type=forking
+
+          Environment=JAVA_HOME=/usr/lib/jvm/jre
+          Environment=CATALINA_PID={{ tomcat_install_dir }}/latest/temp/tomcat.pid
+          Environment=CATALINA_HOME={{ tomcat_install_dir }}/latest
+          Environment=CATALINA_BASE={{ tomcat_install_dir }}/latest
+          ExecStart={{ tomcat_install_dir }}/latest/bin/startup.sh
+          ExecStop={{ tomcat_install_dir }}/latest/bin/shutdown.sh
+
+          User={{ tomcat_user }}
+          Group={{ tomcat_group }}
+          UMask=0007
+          RestartSec=10
+          Restart=always
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload systemd daemon
+      systemd:
+        daemon_reload: yes
+
+    - name: Enable and start Tomcat
+      systemd:
+        name: tomcat
+        enabled: yes
+        state: started
